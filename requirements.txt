@@ -7,6 +7,7 @@ winrt-Windows.Foundation.Collections==4!10.0.28000.2957
 httpx==0.28.1
 SoundCard==0.4.6
 numpy==2.5.4
+pykakasi==2.3.0
 
 # Transitive dependencies of the packages above
 PySide6_Addons==6.12.0

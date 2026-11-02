@@ -18,8 +18,10 @@ DEFAULTS = {
     "modules": {"clock": True, "media": True, "lyrics": True, "visualizer": True},
     "clock": {"time_format": "HH:mm", "date_format": "dddd, d MMMM"},
     # env_file: .env with SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET and SPICY_LYRICS_SECRET_KEY;
-    # environment variables take precedence. The keys themselves never go into config.json.
-    "lyrics": {"offset_ms": 0, "env_file": "", "visible": True},
+    # empty = the .env next to the program (see .env.example). Environment variables take precedence.
+    # The keys themselves never go into config.json.
+    # romaja: Korean lines shown as Revised Romanization (toggled by the button next to the lyrics icon).
+    "lyrics": {"offset_ms": 0, "env_file": "", "visible": True, "romaja": False},
     # Open-Meteo, no key needed; an empty city hides the weather.
     "weather": {"city": ""},
     "background": {
