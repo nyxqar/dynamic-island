@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QLinearGradient,
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from config import BASE_DIR
+from modules.romaja import romanize_text
 
 LRCLIB_URL = "https://lrclib.net/api/get"
 SPICY_URL = "https://api.spicylyrics.org/v1/lyrics/{}"
@@ -174,7 +175,7 @@ class LyricsProvider(QObject):
         super().__init__()
         self._cache_lock = threading.Lock()
         self._current_key = None
-        env = load_env_file(settings.get("env_file", ""))
+        env = load_env_file(settings.get("env_file") or BASE_DIR / ".env")
         secret = lambda name: os.environ.get(name) or env.get(name) or ""
         self._spicy_key = secret("SPICY_LYRICS_SECRET_KEY")
         client_id, client_secret = secret("SPOTIFY_CLIENT_ID"), secret("SPOTIFY_CLIENT_SECRET")
@@ -372,6 +373,8 @@ class LyricsView(QWidget):
         self.items = []
         self.starts = []
         self.fallback = ""
+        self._lines = []
+        self.romaja = False
         self._laid_out_width = None
         self._position = 0.0
         self._position_time = time.monotonic()
@@ -383,21 +386,35 @@ class LyricsView(QWidget):
         self.timer.setTimerType(Qt.PreciseTimer)
 
     def set_lines(self, lines, fallback):
+        self._lines = lines
+        self.fallback = fallback
+        self._rebuild()
+
+    def set_romaja(self, enabled):
+        self.romaja = enabled
+        self._rebuild()
+
+    def _rebuild(self):
         items = []
         previous_end = 0.0
-        for line in lines:
+        for line in self._lines:
+            shown = self._romanized(line) if self.romaja else line
             if line.start - previous_end >= INTERLUDE_MIN_SECONDS:
                 items.append(_Item(previous_end, line.start, None))
-            items.append(_Item(line.start, line.end, line))
+            items.append(_Item(line.start, line.end, shown))
             previous_end = max(previous_end, line.end)
         self.items = items
         self.starts = [item.start for item in items]
-        self.fallback = fallback
         self._laid_out_width = None
         self._scroll = None
         self._activeness = {}
         self._sync_timer()
         self.update()
+
+    @staticmethod
+    def _romanized(line):
+        words = [(start, end, romanize_text(text), joined) for start, end, text, joined in line.words]
+        return Line(line.start, line.end, words, line.word_synced)
 
     def update_position(self, position, playing):
         self._position = position

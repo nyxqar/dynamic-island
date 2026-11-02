@@ -440,11 +440,14 @@ class MediaPanel(QWidget):
         small = round(13 * scale)
         icon_size = round(16 * scale)
         self.lyrics_button = icon_button(ICON_LYRICS, small, self._toggle_lyrics)
+        self.romaja_button = icon_button("가あ", small, self._toggle_romaja)
+        self.romaja_button.setToolTip("Romaja / Romaji")
         self.switch = icon_button(ICON_SWITCH, small, lambda: controller.next_session(self.state))
         self.play = play_button(round(16 * scale), round(32 * scale), controller.toggle_play)
         controls = QHBoxLayout()
         controls.setSpacing(round(14 * scale))
         controls.addWidget(self.lyrics_button)
+        controls.addWidget(self.romaja_button)
         controls.addStretch(1)
         controls.addWidget(icon_button(ICON_PREV, icon_size, controller.previous_track))
         controls.addWidget(self.play)
@@ -470,10 +473,13 @@ class MediaPanel(QWidget):
         if lyrics_provider:
             self.lyrics_view = LyricsView(scale, config["lyrics"]["offset_ms"], centered=False)
             self.lyrics_view.setVisible(config["lyrics"]["visible"])
+            self.lyrics_view.set_romaja(config["lyrics"]["romaja"])
+            self._paint_romaja_button()
             layout.addWidget(self.lyrics_view, 1)
             lyrics_provider.loaded.connect(self._on_lyrics_loaded)
         else:
             self.lyrics_button.hide()
+            self.romaja_button.hide()
             layout.addStretch(1)
 
         if config["weather"]["city"]:
@@ -499,6 +505,23 @@ class MediaPanel(QWidget):
             pass
         self.lyrics_view.setVisible(visible)
         self.lyrics_toggled.emit(visible)
+
+    def _toggle_romaja(self):
+        enabled = not self.config["lyrics"]["romaja"]
+        self.config["lyrics"]["romaja"] = enabled
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        self.lyrics_view.set_romaja(enabled)
+        self._paint_romaja_button()
+
+    def _paint_romaja_button(self):
+        color = "white" if self.config["lyrics"]["romaja"] else "#666666"
+        self.romaja_button.setStyleSheet(
+            f"QPushButton {{ color: {color}; background: transparent; border: none; padding: 4px; }}"
+            "QPushButton:hover { color: #bbbbbb; }"
+        )
 
     def set_state(self, state):
         if state and self._seek_target and time.monotonic() - self._seek_target[1] < SEEK_HOLD_SECONDS:
