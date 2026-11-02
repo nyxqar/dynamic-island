@@ -1,0 +1,38 @@
+{
+  "position": {
+    "offset_x": 83,
+    "offset_y": 107,
+    "screen": "LS24DG30X",
+    "locked": true
+  },
+  "scale": 1.0,
+  "language": "ru",
+  "accent": "#a0101e",
+  "modules": {
+    "clock": true,
+    "media": true,
+    "lyrics": true,
+    "visualizer": true
+  },
+  "clock": {
+    "time_format": "HH:mm",
+    "date_format": "dddd, d MMMM"
+  },
+  "lyrics": {
+    "offset_ms": 0,
+    "env_file": "C:\\Users\\clonc\\PycharmProjects\\Lyricspotify-cli\\.env",
+    "visible": true
+  },
+  "weather": {
+    "city": ""
+  },
+  "background": {
+    "source": "spicetify",
+    "top": "#000000",
+    "bottom": "#142b44",
+    "star": "#ffffff",
+    "shooting_star": "#ffffff",
+    "stars": true,
+    "shooting_stars": true
+  }
+}
