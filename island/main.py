@@ -38,11 +38,12 @@ def main():
         if modules["visualizer"]:
             from modules.visualizer import AudioSpectrum
 
-            spectrum = AudioSpectrum()
+            spectrum = AudioSpectrum(config["visualizer"]["process"])
 
     window = IslandWindow(config, media, lyrics, spectrum)
 
     menu = QMenu()
+    menu.addAction(tr(config, "notes"), window.toggle_notes)
     menu.addAction(tr(config, "toggle"), window.toggle_user_visibility)
     menu.addAction(tr(config, "quit"), app.quit)
     tray = QSystemTrayIcon(make_tray_icon(), app)
@@ -51,6 +52,8 @@ def main():
     tray.show()
 
     def shutdown():
+        if window.notes:
+            window.notes.flush()
         if media:
             media.stop()
         if spectrum:

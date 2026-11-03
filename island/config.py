@@ -22,6 +22,11 @@ DEFAULTS = {
     # The keys themselves never go into config.json.
     # romaja: Korean lines shown as Revised Romanization (toggled by the button next to the lyrics icon).
     "lyrics": {"offset_ms": 0, "env_file": "", "visible": True, "romaja": False},
+    # process: the program whose sound drives the wave (process loopback, Windows 11);
+    # empty = everything the default output device plays.
+    "visualizer": {"process": "Spotify.exe"},
+    # A little pixel Claude dancing in the corner of the album art while music plays.
+    "dancer": True,
     # Open-Meteo, no key needed; an empty city hides the weather.
     "weather": {"city": ""},
     "background": {
@@ -38,6 +43,7 @@ DEFAULTS = {
 STRINGS = {
     "ru": {
         "toggle": "Показать/скрыть",
+        "notes": "Заметки",
         "quit": "Выход",
         "hide": "Скрыть",
         "center": "По центру экрана",
@@ -46,6 +52,7 @@ STRINGS = {
     },
     "en": {
         "toggle": "Show/hide",
+        "notes": "Notes",
         "quit": "Quit",
         "hide": "Hide",
         "center": "Center on screen",
@@ -72,6 +79,18 @@ def _merge(defaults, loaded):
     return result
 
 
+def _add_missing(defaults, loaded):
+    """Insert keys from defaults that the loaded dict lacks; returns True if anything was added."""
+    changed = False
+    for key, default in defaults.items():
+        if key not in loaded:
+            loaded[key] = deepcopy(default)
+            changed = True
+        elif isinstance(default, dict) and isinstance(loaded[key], dict):
+            changed |= _add_missing(default, loaded[key])
+    return changed
+
+
 def save_config(config):
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
@@ -90,6 +109,12 @@ def load_config():
             loaded = json.load(f)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return deepcopy(DEFAULTS)
+    if isinstance(loaded, dict) and _add_missing(DEFAULTS, loaded):
+        # Settings added in newer versions appear in the file; values already there stay untouched.
+        try:
+            save_config(loaded)
+        except OSError:
+            pass
     config = _merge(DEFAULTS, loaded)
     config["scale"] = min(max(config["scale"], 0.5), 3.0)
     return config

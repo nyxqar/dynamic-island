@@ -4,8 +4,8 @@ import random
 from ctypes import wintypes
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QLayout, QMenu, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QApplication, QLayout, QMenu, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 from config import DEFAULTS, save_config, tr
 from modules.clock import ClockWidget
@@ -14,11 +14,12 @@ from modules.theme import DIAGONAL, SHOOTING_STAR_TAIL, ShootingStars, ThemeSour
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
-# QUNS_BUSY, QUNS_RUNNING_D3D_FULL_SCREEN, QUNS_PRESENTATION_MODE
-FULLSCREEN_STATES = {2, 3, 4}
+HWND_TOPMOST = -1
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x0001, 0x0002, 0x0010, 0x0200
 WAVE_HEIGHT = 22
 # Per-frame smoothing of the bottom wave: bars jump up quickly and fall back slowly.
 WAVE_RISE, WAVE_FALL = 0.5, 0.12
+ICON_NOTES = ""
 PANEL_WIDTH, PANEL_WIDTH_LYRICS, PANEL_HEIGHT = 360, 680, 150
 # While dragging, the island snaps to the screen's horizontal center when this close (px).
 SNAP_PX = 12
@@ -29,9 +30,10 @@ _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
 _user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
 _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 
-_shell32 = ctypes.WinDLL("shell32")
-_shell32.SHQueryUserNotificationState.argtypes = [ctypes.POINTER(ctypes.c_int)]
-_shell32.SHQueryUserNotificationState.restype = ctypes.c_long
+_user32.SetWindowPos.argtypes = [
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT
+]
+_user32.SetWindowPos.restype = wintypes.BOOL
 
 
 def set_no_activate(hwnd):
@@ -39,11 +41,11 @@ def set_no_activate(hwnd):
     _user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
 
 
-def is_fullscreen_app_active():
-    state = ctypes.c_int()
-    if _shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
-        return False
-    return state.value in FULLSCREEN_STATES
+def bring_to_top(hwnd):
+    # Fullscreen windows and the taskbar can end up above other topmost windows, so this is re-applied periodically.
+    _user32.SetWindowPos(
+        hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+    )
 
 
 def colors_with_alpha(color, alpha):
@@ -156,12 +158,17 @@ class IslandWindow(QWidget):
         def size(width, height):
             return QSize(round(width * scale), round(height * scale))
 
+        self.panel_height = PANEL_HEIGHT
+        if media and config["dancer"]:
+            from modules.dancer import ROOM
+
+            self.panel_height += ROOM
         # (page, expanded) -> pill size
         self.sizes = {
             ("clock", False): size(180, 36),
             ("clock", True): size(360, 96),
             ("compact", False): size(260, 36),
-            ("panel", True): size(PANEL_WIDTH_LYRICS if lyrics else PANEL_WIDTH, PANEL_HEIGHT),
+            ("panel", True): size(PANEL_WIDTH_LYRICS if lyrics else PANEL_WIDTH, self.panel_height),
         }
         # The window always has the largest pill size; only the pill inside is animated.
         # Fully transparent pixels of a translucent window are click-through on Windows,
@@ -196,6 +203,7 @@ class IslandWindow(QWidget):
         self.clock = ClockWidget(config, scale) if config["modules"]["clock"] else None
         self.pages = {"clock": self.clock or QWidget()}
 
+        self.notes = None
         self.media_state = None
         self.compact = self.panel = None
         if media:
@@ -209,8 +217,11 @@ class IslandWindow(QWidget):
             self.panel.lyrics_toggled.connect(self._on_lyrics_toggled)
             self._on_lyrics_toggled(self.panel.lyrics_visible, animate=False)
             self.panel.accent_changed.connect(self._on_accent_changed)
+            self.panel.notes_requested.connect(self.toggle_notes)
         for page in self.pages.values():
             self.stack.addWidget(page)
+
+        self.notes_button = self._make_notes_button(scale)
 
         self.expanded = False
         self.open = False
@@ -218,6 +229,7 @@ class IslandWindow(QWidget):
         self._shown = None
         self._drag_offset = None
         self._drag_start = None
+        self._menu_open = False
 
         self.anim = QPropertyAnimation(self.pill, b"geometry", self)
         self.anim.setDuration(250)
@@ -235,8 +247,8 @@ class IslandWindow(QWidget):
         self.wave_accent = QColor(config["accent"]) if config["accent"] != "cover" else QColor("#ff4d6d")
         self.wave_timer = QTimer(self, interval=16, timeout=self._update_wave)
 
-        self.fullscreen_timer = QTimer(self, interval=1000, timeout=self._update_visibility)
-        self.fullscreen_timer.start()
+        self.topmost_timer = QTimer(self, interval=500, timeout=self._keep_on_top)
+        self.topmost_timer.start()
 
         self.pill.setGeometry(self._pill_rect(self.sizes["clock", False]))
         self._refresh()
@@ -249,6 +261,34 @@ class IslandWindow(QWidget):
         app.primaryScreenChanged.connect(self._reposition)
         self._reposition()
         self._update_visibility()
+
+    def _make_notes_button(self, scale):
+        button = QPushButton(ICON_NOTES, self.pill)
+        font = QFont()
+        font.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+        font.setPixelSize(round(15 * scale))
+        button.setFont(font)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tr(self.config, "notes"))
+        button.setStyleSheet(
+            "QPushButton { color: white; background: transparent; border: none; padding: 4px; }"
+            "QPushButton:hover { color: #bbbbbb; }"
+        )
+        button.adjustSize()
+        button.clicked.connect(self.toggle_notes)
+        button.hide()
+        return button
+
+    def _show_notes_button(self):
+        # Only on the expanded clock; the media panel has its own button among the controls.
+        visible = self._shown == ("clock", True) and self.anim.state() != QAbstractAnimation.Running
+        if visible:
+            margin = round(14 * self.config["scale"])
+            b = self.notes_button
+            b.move(self.pill.width() - b.width() - margin, (self.pill.height() - b.height()) // 2)
+            b.raise_()
+        self.notes_button.setVisible(visible)
 
     def _pill_rect(self, size):
         x = (self.width() - size.width()) // 2
@@ -343,6 +383,7 @@ class IslandWindow(QWidget):
     def contextMenuEvent(self, event):
         locked = self.config["position"]["locked"]
         menu = QMenu(self)
+        menu.addAction(tr(self.config, "notes"), self.toggle_notes)
         menu.addAction(tr(self.config, "hide"), self.toggle_user_visibility)
         menu.addSeparator()
         center = menu.addAction(tr(self.config, "center"), self.center_on_screen)
@@ -353,16 +394,33 @@ class IslandWindow(QWidget):
         lock.setCheckable(True)
         lock.setChecked(locked)
         lock.toggled.connect(self.set_locked)
-        menu.exec(event.globalPos())
+        self._menu_open = True
+        self.collapse_timer.stop()
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            self._menu_open = False
+        if not self.pill.underMouse():
+            self.collapse_timer.start()
+
+    def toggle_notes(self):
+        if self.notes is None:
+            from modules.notes import NotesWindow
+
+            self.notes = NotesWindow(self.config)
+        pill = self.pill.geometry().translated(self.pos())
+        self.notes.toggle_near(pill, self.screen())
 
     def toggle_user_visibility(self):
         self.user_hidden = not self.user_hidden
         self._update_visibility()
 
     def _update_visibility(self):
-        should_show = not self.user_hidden and not is_fullscreen_app_active()
+        should_show = not self.user_hidden
         if should_show != self.isVisible():
             self.setVisible(should_show)
+            if should_show:
+                self._keep_on_top()
         if self.shooting_stars:
             if should_show:
                 self.shooting_stars.start()
@@ -373,6 +431,11 @@ class IslandWindow(QWidget):
                 self.wave_timer.start()
             else:
                 self.wave_timer.stop()
+
+    def _keep_on_top(self):
+        # Raising the island above its own context menu would put it under the cursor and swallow the click.
+        if self.isVisible() and QApplication.activePopupWidget() is None:
+            bring_to_top(int(self.winId()))
 
     def _current_page(self):
         if self.media_state:
@@ -388,6 +451,7 @@ class IslandWindow(QWidget):
         if shown == self._shown:
             return
         self._shown = shown
+        self.notes_button.hide()
         self.stack.setCurrentWidget(self.pages[page])
         if self.clock:
             self.clock.set_expanded(False)
@@ -399,6 +463,7 @@ class IslandWindow(QWidget):
     def _on_anim_finished(self):
         if self.clock and self._shown == ("clock", True):
             self.clock.set_expanded(True)
+        self._show_notes_button()
 
     def _on_enter(self):
         self.collapse_timer.stop()
@@ -407,6 +472,8 @@ class IslandWindow(QWidget):
             self._refresh()
 
     def collapse(self):
+        if self._menu_open:
+            return
         if QGuiApplication.mouseButtons() != Qt.NoButton:
             self.collapse_timer.start()
             return
@@ -423,7 +490,7 @@ class IslandWindow(QWidget):
     def _on_lyrics_toggled(self, visible, animate=True):
         scale = self.config["scale"]
         width = PANEL_WIDTH_LYRICS if visible else PANEL_WIDTH
-        self.sizes["panel", True] = QSize(round(width * scale), round(PANEL_HEIGHT * scale))
+        self.sizes["panel", True] = QSize(round(width * scale), round(self.panel_height * scale))
         if animate:
             self._shown = None
             self._refresh()

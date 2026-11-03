@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import winrt.windows.foundation  # noqa: F401  registers IAsyncOperation so WinRT calls can be awaited
 import winrt.windows.foundation.collections  # noqa: F401  registers IVectorView returned by get_sessions()
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTime, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 from winrt.windows.media.control import (
@@ -27,6 +27,7 @@ SEEK_HOLD_SECONDS = 1.5
 ICON_LYRICS = ""
 DEFAULT_ACCENT = QColor("#ff4d6d")
 LEFT_COLUMN_WIDTH = 330
+ICON_NOTES = ""
 ICON_PREV, ICON_PLAY, ICON_PAUSE, ICON_NEXT, ICON_SWITCH = "", "", "", "", ""
 
 
@@ -381,6 +382,7 @@ class MediaCompact(QWidget):
 class MediaPanel(QWidget):
     lyrics_toggled = Signal(bool)
     accent_changed = Signal(object)
+    notes_requested = Signal()
 
     def __init__(self, config, scale, controller, lyrics_provider):
         super().__init__()
@@ -393,6 +395,14 @@ class MediaPanel(QWidget):
         self._thumbnail = object()
 
         self.cover = Cover(round(56 * scale), round(10 * scale))
+        self.dancer = None
+        dancer_room = 0
+        if config["dancer"]:
+            from modules.dancer import CELL, GRID_W, ROOM, Dancer
+
+            self.dancer = Dancer(self, CELL * scale * GRID_W)
+            self.cover.installEventFilter(self)
+            dancer_room = ROOM
         self.title = ElidedLabel(round(14 * scale), QFont.DemiBold)
         self.artist = ElidedLabel(round(12 * scale), color="#cccccc")
         self.album = ElidedLabel(round(11 * scale), color="#888888")
@@ -442,12 +452,14 @@ class MediaPanel(QWidget):
         self.lyrics_button = icon_button(ICON_LYRICS, small, self._toggle_lyrics)
         self.romaja_button = icon_button("가あ", small, self._toggle_romaja)
         self.romaja_button.setToolTip("Romaja / Romaji")
+        self.notes_button = icon_button(ICON_NOTES, small, lambda: self.notes_requested.emit())
         self.switch = icon_button(ICON_SWITCH, small, lambda: controller.next_session(self.state))
         self.play = play_button(round(16 * scale), round(32 * scale), controller.toggle_play)
         controls = QHBoxLayout()
         controls.setSpacing(round(14 * scale))
         controls.addWidget(self.lyrics_button)
         controls.addWidget(self.romaja_button)
+        controls.addWidget(self.notes_button)
         controls.addStretch(1)
         controls.addWidget(icon_button(ICON_PREV, icon_size, controller.previous_track))
         controls.addWidget(self.play)
@@ -466,7 +478,7 @@ class MediaPanel(QWidget):
         left_widget.setFixedWidth(round(LEFT_COLUMN_WIDTH * scale))
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(round(2 * scale), round(8 * scale), round(2 * scale), round(4 * scale))
+        layout.setContentsMargins(round(2 * scale), round((8 + dancer_room) * scale), round(2 * scale), round(4 * scale))
         layout.setSpacing(round(18 * scale))
         layout.addWidget(left_widget)
         self.lyrics_view = None
@@ -491,6 +503,17 @@ class MediaPanel(QWidget):
         self._seek_target = None
         self.timer = QTimer(self, interval=33, timeout=self._tick)
         self.timer.start()
+
+    def eventFilter(self, watched, event):
+        if watched is self.cover and event.type() in (QEvent.Move, QEvent.Resize, QEvent.Show):
+            self._place_dancer()
+        return False
+
+    def _place_dancer(self):
+        # Feet on the top edge of the album art, centered over it.
+        cover = self.cover.geometry().translated(self.cover.parentWidget().mapTo(self, QPoint(0, 0)))
+        self.dancer.move(cover.center().x() - self.dancer.width() // 2 + 1, cover.top() - self.dancer.height())
+        self.dancer.raise_()
 
     @property
     def lyrics_visible(self):
@@ -538,6 +561,8 @@ class MediaPanel(QWidget):
         self.switch.setToolTip(app_name(state.app_id))
         self.play.setText(ICON_PAUSE if state.playing else ICON_PLAY)
         self.equalizer.playing = state.playing
+        if self.dancer:
+            self.dancer.set_playing(state.playing)
         self.cover.set_data(state.thumbnail)
         if state.thumbnail is not self._thumbnail:
             self._thumbnail = state.thumbnail

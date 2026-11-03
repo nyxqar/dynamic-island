@@ -2,6 +2,9 @@
 .env
 island/.env
 
+# Личные заметки
+island/notes.json
+
 # Сгенерированные и локальные каталоги
 .venv/
 __pycache__/
