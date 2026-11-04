@@ -1,6 +1,7 @@
 import threading
 import time
 import warnings
+from collections import deque
 
 import numpy as np
 
@@ -18,6 +19,10 @@ BEAT_RATIO = 1.45
 BEAT_MIN_INTERVAL = 0.22
 DEVICE_CHECK_SECONDS = 3.0
 STALE_SECONDS = 0.25
+# Tempo is the median gap between recent bass hits, folded into this range (half/double time are the same beat).
+TEMPO_RANGE = (70.0, 180.0)
+TEMPO_WINDOW_SECONDS = 8.0
+TEMPO_MIN_BEATS = 5
 
 
 class AudioSpectrum:
@@ -29,6 +34,7 @@ class AudioSpectrum:
         self._lock = threading.Lock()
         self._levels = np.zeros(BANDS)
         self._beat_time = 0.0
+        self._beats = deque(maxlen=32)
         self._updated = 0.0
         self._running = True
 
@@ -50,6 +56,25 @@ class AudioSpectrum:
             if time.monotonic() - self._updated > STALE_SECONDS:
                 return None
             return self._levels.copy(), time.monotonic() - self._beat_time
+
+    def tempo(self):
+        """(beats per minute, monotonic time of the last beat), or None while there is no steady beat."""
+        now = time.monotonic()
+        with self._lock:
+            beats = [b for b in self._beats if now - b < TEMPO_WINDOW_SECONDS]
+            last = self._beat_time
+        if len(beats) < TEMPO_MIN_BEATS or now - beats[-1] > 2.0:
+            return None
+        low, high = TEMPO_RANGE
+        folded = []
+        for gap in np.diff(beats):
+            bpm = 60.0 / gap
+            while bpm < low:
+                bpm *= 2
+            while bpm > high:
+                bpm /= 2
+            folded.append(bpm)
+        return float(np.median(folded)), last
 
     def _run(self):
         import soundcard
@@ -126,7 +151,9 @@ class AudioSpectrum:
 
             bass = float(np.mean(spectrum[self._bass] ** 2))
             if bass > self._bass_average * BEAT_RATIO and now - self._beat_time > BEAT_MIN_INTERVAL:
-                self._beat_time = now
+                with self._lock:
+                    self._beat_time = now
+                    self._beats.append(now)
             self._bass_average = self._bass_average * 0.93 + bass * 0.07
         with self._lock:
             self._levels = levels

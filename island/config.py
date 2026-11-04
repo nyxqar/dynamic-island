@@ -13,6 +13,10 @@ DEFAULTS = {
     "position": {"offset_x": 0, "offset_y": 8, "screen": "", "locked": False},
     "scale": 1.0,
     "language": "ru",
+    # Interface font family; empty = Segoe UI Variable.
+    "font": "",
+    # Background opacity of the island when collapsed and when expanded (0.2–1).
+    "opacity": {"collapsed": 1.0, "expanded": 1.0},
     # Progress bar, equalizer and the wave: a hex color, or "cover" to take it from the album art.
     "accent": "#a0101e",
     "modules": {"clock": True, "media": True, "lyrics": True, "visualizer": True},
@@ -49,6 +53,7 @@ STRINGS = {
         "center": "По центру экрана",
         "lock": "Закрепить",
         "reset_position": "Сбросить положение",
+        "settings": "Настройки",
     },
     "en": {
         "toggle": "Show/hide",
@@ -58,6 +63,7 @@ STRINGS = {
         "center": "Center on screen",
         "lock": "Lock position",
         "reset_position": "Reset position",
+        "settings": "Settings",
     },
 }
 

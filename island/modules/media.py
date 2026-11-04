@@ -19,6 +19,7 @@ from winrt.windows.storage.streams import Buffer, InputStreamOptions
 
 from config import save_config
 from modules.lyrics import ElidedLabel, LyricsView
+from ui.theme import base_font
 
 POLL_INTERVAL = 0.5
 MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
@@ -210,7 +211,7 @@ def cover_pixmap(data, side, radius):
     else:
         painter.fillRect(result.rect(), QColor(50, 50, 50))
         painter.setPen(QColor(160, 160, 160))
-        font = QFont("Segoe UI")
+        font = base_font()
         font.setPixelSize(result.height() // 2)
         painter.setFont(font)
         painter.drawText(result.rect(), Qt.AlignCenter, "♪")

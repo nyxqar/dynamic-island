@@ -10,8 +10,11 @@ EYES = QColor("#1a1a1a")
 SHADOW = QColor(0, 0, 0, 110)
 # Sprite grid: body 8x4 cells, arms stick out one cell on each side, legs hang below.
 GRID_W, GRID_H = 14, 8
-TEMPO = 2.2  # dance moves per second
+TEMPO = 2.2  # dance moves per second when no beat is detected
 CELL = 2.5
+# How quickly the dance speed follows a tempo change, and how hard each detected beat pulls the moves onto it.
+TEMPO_FOLLOW = 3.0
+BEAT_PULL = 0.5
 # Extra height the media panel gets so the dancer can stand on top of the album art.
 ROOM = 10
 
@@ -23,13 +26,40 @@ class Dancer(QWidget):
         self.cell = max(1.0, side / GRID_W)
         self.setFixedSize(round(self.cell * GRID_W), round(self.cell * GRID_H))
         self.playing = False
-        self.timer = QTimer(self, interval=33, timeout=self.update)
+        self.timer = QTimer(self, interval=33, timeout=self._tick)
+        # One move per beat: the phase advances by π per beat, and a move happens whenever sin(phase) changes sign.
+        self.tempo_source = None
+        self.rate = TEMPO
+        self.phase = 0.0
+        self._last_tick = time.monotonic()
+        self._last_beat = 0.0
+
+    def set_tempo_source(self, source):
+        """Anything with tempo() -> (bpm, last beat time) | None, e.g. AudioSpectrum."""
+        self.tempo_source = source
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = min(now - self._last_tick, 0.1)
+        self._last_tick = now
+        tempo = self.tempo_source.tempo() if self.tempo_source else None
+        target = tempo[0] / 60 if tempo else TEMPO
+        self.rate += (target - self.rate) * (1 - math.exp(-dt * TEMPO_FOLLOW))
+        self.phase += math.pi * self.rate * dt
+        if tempo and tempo[1] != self._last_beat:
+            self._last_beat = tempo[1]
+            # Nudge the nearest move boundary (a multiple of π) towards the moment the beat was heard.
+            late = now - tempo[1]
+            error = math.remainder(self.phase - math.pi * self.rate * late, math.pi)
+            self.phase -= error * BEAT_PULL
+        self.update()
 
     def set_playing(self, playing):
         if playing == self.playing:
             return
         self.playing = playing
         if playing:
+            self._last_tick = time.monotonic()
             self.timer.start()
         else:
             self.timer.stop()
@@ -40,11 +70,12 @@ class Dancer(QWidget):
 
     def showEvent(self, event):
         if self.playing:
+            self._last_tick = time.monotonic()
             self.timer.start()
 
     def _cells(self):
         """(x, y, color) of every filled cell for the current moment."""
-        phase = time.monotonic() * TEMPO * math.pi if self.playing else 0.0
+        phase = self.phase if self.playing else 0.0
         step = math.sin(phase)
         sway = round(math.sin(phase / 2)) if self.playing else 0
         x0, y0 = 3 + sway, 2

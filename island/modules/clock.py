@@ -2,10 +2,12 @@ from PySide6.QtCore import QDateTime, QLocale, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from ui.theme import base_font
+
 
 def _label(pixel_size, weight):
     label = QLabel(alignment=Qt.AlignCenter)
-    font = QFont("Segoe UI")
+    font = base_font()
     font.setPixelSize(pixel_size)
     font.setWeight(weight)
     label.setFont(font)

@@ -2,8 +2,9 @@
 .env
 island/.env
 
-# Личные заметки
+# Личные заметки и картинки из них
 island/notes.json
+island/notes_images/
 
 # Сгенерированные и локальные каталоги
 .venv/

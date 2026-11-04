@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from config import BASE_DIR
 from modules.romaja import romanize_text
+from ui.theme import base_font
 
 LRCLIB_URL = "https://lrclib.net/api/get"
 LRCLIB_SEARCH_URL = "https://lrclib.net/api/search"
@@ -399,7 +400,7 @@ class LyricsProvider(QObject):
 class ElidedLabel(QLabel):
     def __init__(self, pixel_size, weight=QFont.Normal, color="white", alignment=Qt.AlignLeft | Qt.AlignVCenter):
         super().__init__(alignment=alignment)
-        font = QFont("Segoe UI")
+        font = base_font()
         font.setPixelSize(pixel_size)
         font.setWeight(weight)
         self.setFont(font)
@@ -450,7 +451,7 @@ class LyricsView(QWidget):
         self.scale = scale
         self.centered = centered
         self.offset = offset_ms / 1000
-        self.font = QFont("Segoe UI")
+        self.font = base_font()
         self.font.setPixelSize(round(15 * scale))
         self.font.setWeight(QFont.Bold)
         self.metrics = QFontMetricsF(self.font)
