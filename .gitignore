@@ -14,3 +14,9 @@ dist/
 build/
 .idea/
 *.pyc
+
+# Claude Code project notes
+CLAUDE.md
+
+# Personal settings (window position, paths); created with defaults on first run
+island/config.json

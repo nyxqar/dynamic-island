@@ -7,11 +7,13 @@ import re
 import threading
 import time
 import unicodedata
+import weakref
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QImage, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from config import BASE_DIR
@@ -21,9 +23,9 @@ from ui.theme import base_font
 LRCLIB_URL = "https://lrclib.net/api/get"
 LRCLIB_SEARCH_URL = "https://lrclib.net/api/search"
 SPICY_URL = "https://api.spicylyrics.org/v1/lyrics/{}"
-SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 CACHE_DIR = BASE_DIR / "cache" / "lyrics"
+# Spotify track ids captured from copied links, by track key. Kept outside CACHE_DIR so the LRU trim never touches it.
+IDS_PATH = BASE_DIR / "cache" / "spotify_ids.json"
 # 3: tracks that only had plain lyrics were cached as empty before, so they must be fetched again.
 CACHE_VERSION = 3
 CACHE_LIMIT = 25 * 1024 * 1024
@@ -32,7 +34,7 @@ EMPTY_CACHE_SECONDS = 24 * 3600
 REQUEST_TIMEOUT = 5.0
 # lrclib.net regularly answers 503 "ServerOverloaded"; without retries a track would stay without lyrics.
 RETRY_DELAYS = (5, 15, 30, 60)
-# A Spotify search hit whose length differs more than this is a different recording (live, remix, edit).
+# An lrclib hit whose length differs more than this is a different recording (live, remix, edit).
 DURATION_TOLERANCE = 3.0
 LAST_LINE_SECONDS = 5.0
 INTERLUDE_MIN_SECONDS = 3.0
@@ -44,6 +46,8 @@ TITLE_BRACKETS = re.compile(rf"\s*[(\[][^)\]]*\b(?:{_TITLE_NOISE})\b[^)\]]*[)\]]
 TITLE_SUFFIX = re.compile(rf"\s+-\s+[^-]*\b(?:{_TITLE_NOISE})\b.*$", re.IGNORECASE)
 # "&" and " x " are left alone: they are part of many band names (Simon & Garfunkel).
 ARTIST_SEPARATOR = re.compile(r",|;|\s(?:feat\.?|ft\.?|with)\s", re.IGNORECASE)
+# "Copy link" in Spotify gives open.spotify.com/track/<22 chars>?si=...; "Copy Spotify URI" gives spotify:track:<22 chars>.
+SPOTIFY_TRACK = re.compile(r"(?:open\.spotify\.com/(?:intl-[a-z-]+/)?track/|spotify:track:)([0-9A-Za-z]{22})")
 
 
 @dataclass
@@ -141,90 +145,159 @@ def load_env_file(path):
     return values
 
 
-class SpotifySearch:
-    """Finds the Spotify track id for what SMTC reports; Spicy Lyrics is keyed by that id."""
+def spotify_track_id(text):
+    """Track id from a copied Spotify link or URI, None for any other text."""
+    match = SPOTIFY_TRACK.search(text or "")
+    return match.group(1) if match else None
 
-    def __init__(self, client_id, client_secret):
-        self._auth = (client_id, client_secret)
-        self._lock = threading.Lock()
-        self._token = None
-        self._expires = 0.0
 
-    def _access_token(self):
-        with self._lock:
-            if self._token and time.monotonic() < self._expires - 60:
-                return self._token
-            response = httpx.post(
-                SPOTIFY_TOKEN_URL, data={"grant_type": "client_credentials"}, auth=self._auth,
-                timeout=REQUEST_TIMEOUT, trust_env=False,
-            )
-            response.raise_for_status()
-            data = response.json()
-            self._token = data["access_token"]
-            self._expires = time.monotonic() + float(data.get("expires_in", 3600))
-            return self._token
+class _BridgeHandler(BaseHTTPRequestHandler):
+    """Receives {"uri", "title", "duration_ms"} from the spicetify/island.js extension inside Spotify."""
 
-    def find(self, title, artist, duration):
-        """Track id, "" when Spotify has no such track, None on a network/API error."""
-        clean = lambda text: text.replace('"', " ").strip()
-        query = f"track:{clean(title)}"
-        if artist:
-            query += f" artist:{clean(artist.split(',')[0])}"
+    def do_OPTIONS(self):
+        self._reply(204)
+
+    def do_POST(self):
+        origin = self.headers.get("Origin")
+        # A web page open in a browser could post here too; only Spotify's own pages are listened to.
+        if self.path != "/track" or (origin and not origin.endswith(".spotify.com")):
+            self._reply(403)
+            return
         try:
-            response = httpx.get(
-                SPOTIFY_SEARCH_URL, params={"q": query, "type": "track", "limit": 5},
-                headers={"Authorization": f"Bearer {self._access_token()}"},
-                timeout=REQUEST_TIMEOUT, trust_env=False,
-            )
-            if response.status_code == 401:
-                self._token = None
-            response.raise_for_status()
-            items = response.json()["tracks"]["items"]
-        except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            return None
-        return self._pick(items, title, duration)
+            length = min(int(self.headers.get("Content-Length") or 0), 4096)
+            data = json.loads(self.rfile.read(length))
+            track_id = spotify_track_id(data.get("uri"))
+            title = str(data.get("title") or "")
+            duration = float(data.get("duration_ms") or 0) / 1000
+        except (ValueError, TypeError, AttributeError):
+            self._reply(400)
+            return
+        provider = _bridge_owner() if _bridge_owner else None
+        if track_id and title and provider is not None:
+            provider.spotify_track.emit(track_id, title, duration)
+        self._reply(204)
 
-    @staticmethod
-    def _pick(items, title, duration):
-        wanted = _normalize(title)
-        best, best_diff = "", None
-        for item in items:
-            name = _normalize(item.get("name", ""))
-            diff = abs(item.get("duration_ms", 0) / 1000 - duration) if duration > 0 else 0.0
-            name_ok = bool(name) and (name.startswith(wanted) or wanted.startswith(name))
-            if diff > DURATION_TOLERANCE or not (name_ok or diff <= 1.0):
-                continue
-            if best_diff is None or diff < best_diff:
-                best, best_diff = item["id"], diff
-        return best
+    def _reply(self, code):
+        self.send_response(code)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+# One server for the whole process: LyricsProvider is recreated on settings changes, the port is not.
+_bridge = None
+_bridge_owner = None
+
+
+def _attach_bridge(provider, port):
+    global _bridge, _bridge_owner
+    _bridge_owner = weakref.ref(provider)
+    if _bridge is not None or not port:
+        return
+    try:
+        _bridge = ThreadingHTTPServer(("127.0.0.1", port), _BridgeHandler)
+    except OSError:
+        return
+    threading.Thread(target=_bridge.serve_forever, daemon=True).start()
 
 
 class LyricsProvider(QObject):
     loaded = Signal(str, object)
+    # Spotify id, title, duration of the playing track, reported by the Spicetify extension.
+    spotify_track = Signal(str, str, float)
 
     def __init__(self, settings):
         super().__init__()
         self._cache_lock = threading.Lock()
         self._current_key = None
+        self._current = None
+        # The extension and SMTC report a new track in no particular order, so the last report waits here.
+        self._reported = None
         env = load_env_file(settings.get("env_file") or BASE_DIR / ".env")
-        secret = lambda name: os.environ.get(name) or env.get(name) or ""
-        self._spicy_key = secret("SPICY_LYRICS_SECRET_KEY")
-        client_id, client_secret = secret("SPOTIFY_CLIENT_ID"), secret("SPOTIFY_CLIENT_SECRET")
-        self._spotify = SpotifySearch(client_id, client_secret) if client_id and client_secret else None
+        self._spicy_key = os.environ.get("SPICY_LYRICS_SECRET_KEY") or env.get("SPICY_LYRICS_SECRET_KEY") or ""
+        self._ids = self._load_ids()
+        if self._spicy_key:
+            # Spicy Lyrics is keyed by the Spotify track id: it comes from the Spicetify extension
+            # or from a link the user copies in Spotify.
+            QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard)
+            self.spotify_track.connect(self._on_spotify_track)
+            _attach_bridge(self, settings.get("spicetify_port", 0))
 
     def request(self, title, artist, album, duration):
         key = track_key(title, artist, album, duration)
         self._current_key = key
+        self._current = (title, artist, album, duration)
+        refresh = False
+        if self._reported and self._is_current(*self._reported[1:]):
+            refresh = self._remember_id(key, self._reported[0])
         threading.Thread(
-            target=self._fetch, args=(key, title, artist, album, duration), daemon=True
+            target=self._fetch, args=(key, title, artist, album, duration, refresh), daemon=True
         ).start()
         return key
 
-    def _fetch(self, key, title, artist, album, duration):
-        lines = self._read_cache(key)
+    def _on_clipboard(self):
+        # Only a Spotify track link is used; any other clipboard text is ignored and never stored.
+        track_id = spotify_track_id(QGuiApplication.clipboard().text())
+        if track_id and self._current is not None:
+            self._use_id(track_id)
+
+    def _on_spotify_track(self, track_id, title, duration):
+        self._reported = (track_id, title, duration)
+        if self._is_current(title, duration):
+            self._use_id(track_id)
+
+    def _is_current(self, title, duration):
+        if self._current is None:
+            return False
+        current_title, _, _, current_duration = self._current
+        if not _normalize(title) or _normalize(title) != _normalize(current_title):
+            return False
+        return not (duration > 0 and current_duration > 0) or abs(duration - current_duration) <= DURATION_TOLERANCE
+
+    def _remember_id(self, key, track_id):
+        """True when the id is new for this track, so lyrics must be fetched again."""
+        if self._ids.get(key) == track_id:
+            return False
+        self._ids[key] = track_id
+        self._save_ids()
+        return True
+
+    def _use_id(self, track_id):
+        key = self._current_key
+        if self._remember_id(key, track_id):
+            threading.Thread(target=self._fetch, args=(key, *self._current, True), daemon=True).start()
+
+    @staticmethod
+    def _load_ids():
+        try:
+            with IDS_PATH.open(encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+    def _save_ids(self):
+        with self._cache_lock:
+            try:
+                IDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with IDS_PATH.open("w", encoding="utf-8") as f:
+                    json.dump(self._ids, f, ensure_ascii=False)
+            except OSError:
+                pass
+
+    def _fetch(self, key, title, artist, album, duration, refresh=False):
+        # refresh: a Spotify id has just arrived, so the cached lrclib result must not be reused.
+        lines = None if refresh else self._read_cache(key)
         delays = iter(RETRY_DELAYS)
         while lines is None:
-            lines, complete = self._download(title, artist, album, duration)
+            lines, complete = self._download(key, title, artist, album, duration)
             if lines is not None:
                 if complete:
                     self._write_cache(key, lines)
@@ -237,20 +310,17 @@ class LyricsProvider(QObject):
                 return
         self.loaded.emit(key, lines or [])
 
-    def _download(self, title, artist, album, duration):
+    def _download(self, key, title, artist, album, duration):
         """(lines, complete): lines is None when nothing was found but a source failed;
         complete is False when a better source failed, so the result must not be cached."""
         complete = True
-        if self._spicy_key and self._spotify:
-            track_id = self._spotify.find(title, artist, duration)
-            if track_id is None:
+        track_id = self._ids.get(key)
+        if self._spicy_key and track_id:
+            lines = self._spicy(track_id)
+            if lines is None:
                 complete = False
-            elif track_id:
-                lines = self._spicy(track_id)
-                if lines is None:
-                    complete = False
-                elif lines:
-                    return lines, True
+            elif lines:
+                return lines, True
         result = self._lrclib(title, artist, album, duration)
         if result is None:
             return None, False

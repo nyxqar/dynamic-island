@@ -25,7 +25,9 @@ DEFAULTS = {
     # empty = the .env next to the program (see .env.example). Environment variables take precedence.
     # The keys themselves never go into config.json.
     # romaja: Korean lines shown as Revised Romanization (toggled by the button next to the lyrics icon).
-    "lyrics": {"offset_ms": 0, "env_file": "", "visible": True, "romaja": False},
+    # spicetify_port: 127.0.0.1 port where spicetify/island.js reports the playing Spotify track id
+    # (must match PORT in that file); 0 = off.
+    "lyrics": {"offset_ms": 0, "env_file": "", "visible": True, "romaja": False, "spicetify_port": 38917},
     # process: the program whose sound drives the wave (process loopback, Windows 11);
     # empty = everything the default output device plays.
     "visualizer": {"process": "Spotify.exe"},
