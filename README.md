@@ -126,7 +126,7 @@ spicetify/
 ### 🚀 Запуск
 
 ```powershell
-git clone https://github.com/clon4iik/dynamic-island.git
+git clone https://github.com/nyxqar/dynamic-island.git
 cd dynamic-island
 py -m venv .venv
 .venv\Scripts\activate
